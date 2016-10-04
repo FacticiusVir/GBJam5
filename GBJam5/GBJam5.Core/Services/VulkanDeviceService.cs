@@ -19,15 +19,18 @@ namespace GBJam5.Services
         // garbage-collected while still in use by the unmanaged API.
         private readonly SharpVk.Interop.DebugReportCallbackDelegate debugReportDelegate;
 
+        private const uint gbTextureWidth = 160;
+        private const uint gbTextureHeight = 144;
+
         [DllImport("kernel32.dll", EntryPoint = "CopyMemory", SetLastError = false)]
         private static extern void CopyMemory(IntPtr dest, IntPtr src, uint count);
 
         private readonly Vertex[] quadVertices =
         {
             new Vertex(new vec2(0, 0), new vec2(0, 0)),
-            new Vertex(new vec2(160, 0), new vec2(1, 0)),
-            new Vertex(new vec2(160, 144), new vec2(1, 1)),
-            new Vertex(new vec2(0, 144), new vec2(0, 1))
+            new Vertex(new vec2(1, 0), new vec2(1, 0)),
+            new Vertex(new vec2(1, 1), new vec2(1, 1)),
+            new Vertex(new vec2(0, 1), new vec2(0, 1))
         };
 
         private readonly ushort[] quadIndices = { 0, 1, 2, 2, 3, 0 };
@@ -48,9 +51,12 @@ namespace GBJam5.Services
         private Image[] swapChainImages;
         private ImageView[] swapChainImageViews;
         private RenderPass renderPass;
+        private RenderPass offScreenRenderPass;
         private DescriptorSetLayout descriptorSetLayout;
         private PipelineLayout pipelineLayout;
+        private Pipeline offScreenPipeline;
         private Pipeline pipeline;
+        private Framebuffer offScreenFrameBuffer;
         private Framebuffer[] frameBuffers;
         private CommandPool transientCommandPool;
         private CommandPool commandPool;
@@ -67,10 +73,17 @@ namespace GBJam5.Services
         private Image textureImage;
         private DeviceMemory textureImageMemory;
         private ImageView textureImageView;
+        private Image offScreenImage;
+        private DeviceMemory offScreenImageMemory;
+        private ImageView offScreenImageView;
         private Sampler textureSampler;
         private DescriptorPool descriptorPool;
+        private DescriptorSet offScreenDescriptorSet;
         private DescriptorSet descriptorSet;
+        private CommandBuffer offScreenCommandBuffer;
         private CommandBuffer[] commandBuffers;
+
+        private Semaphore screenRenderSemaphore;
         private Semaphore imageAvailableSemaphore;
         private Semaphore renderFinishedSemaphore;
 
@@ -104,13 +117,17 @@ namespace GBJam5.Services
             this.CreateSwapChain();
             this.CreateImageViews();
             this.CreateRenderPass();
+            this.CreateOffScreenRenderPass();
             this.CreateDescriptorSetLayout();
             this.CreateGraphicsPipeline();
             this.CreateFrameBuffers();
             this.CreateCommandPools();
             this.CreateTextureImage();
             this.CreateTextureImageView();
+            this.CreateOffScreenImage();
+            this.CreateOffScreenImageView();
             this.CreateTextureSampler();
+            this.CreateOffScreenFrameBuffer();
             this.CreateVertexBuffers();
             this.CreateIndexBuffer();
             this.CreateUniformBuffer();
@@ -129,25 +146,38 @@ namespace GBJam5.Services
                 this.RecreateSwapChain();
             }
 
-            UniformBufferObject ubo = new UniformBufferObject
-            {
-                World = mat4.Identity,
-                View = mat4.Identity,
-                Projection = mat4.Scale(this.PixelScale) * mat4.Translate(-1, -1, 0) * mat4.Scale(2) * mat4.Scale(1 / (float)this.swapChainExtent.Width, 1 / (float)this.swapChainExtent.Height, 1) * mat4.Translate((this.swapChainExtent.Width - 160) / 2f, (this.swapChainExtent.Height - 144) / 2f, 0)
-            };
-
-            uint uboSize = MemUtil.SizeOf<UniformBufferObject>();
-
-            IntPtr memoryBuffer = IntPtr.Zero;
-            this.uniformStagingBufferMemory.MapMemory(0, uboSize, MemoryMapFlags.None, ref memoryBuffer);
-
-            MemUtil.WriteToPtr(memoryBuffer, ubo);
-
-            this.uniformStagingBufferMemory.UnmapMemory();
-
-            this.CopyBuffer(this.uniformStagingBuffer, this.uniformBuffer, uboSize);
-
             uint nextImage = this.swapChain.AcquireNextImage(uint.MaxValue, this.imageAvailableSemaphore, null);
+
+            this.UpdateUbo(new UniformBufferObject
+            {
+                World = mat4.Translate(32, 32, 0) * mat4.Scale(32, 32, 1),
+                View = mat4.Identity,
+                Projection = mat4.Translate(-1, -1, 0)
+                                * mat4.Scale(2)
+                                * mat4.Scale(1 / (float)gbTextureWidth, 1 / (float)gbTextureHeight, 1)
+            });
+
+            this.graphicsQueue.Submit(new SubmitInfo[]
+            {
+                new SubmitInfo
+                {
+                    CommandBuffers = new [] { this.offScreenCommandBuffer },
+                    SignalSemaphores = new [] { this.screenRenderSemaphore },
+                    WaitDestinationStageMask = new [] { PipelineStageFlags.ColorAttachmentOutput },
+                    WaitSemaphores = new [] { this.imageAvailableSemaphore }
+                }
+            }, null);
+            
+            this.UpdateUbo(new UniformBufferObject
+            {
+                World = mat4.Scale(160, 144, 1),
+                View = mat4.Identity,
+                Projection = mat4.Scale(this.PixelScale)
+                                * mat4.Translate(-1, -1, 0)
+                                * mat4.Scale(2)
+                                * mat4.Scale(1 / (float)this.swapChainExtent.Width, 1 / (float)this.swapChainExtent.Height, 1)
+                                * mat4.Translate((this.swapChainExtent.Width - gbTextureWidth) / 2f, (this.swapChainExtent.Height - gbTextureHeight) / 2f, 0)
+            });
 
             this.graphicsQueue.Submit(new SubmitInfo[]
             {
@@ -156,7 +186,7 @@ namespace GBJam5.Services
                     CommandBuffers = new [] { this.commandBuffers[nextImage] },
                     SignalSemaphores = new [] { this.renderFinishedSemaphore },
                     WaitDestinationStageMask = new [] { PipelineStageFlags.ColorAttachmentOutput },
-                    WaitSemaphores = new [] { this.imageAvailableSemaphore }
+                    WaitSemaphores = new [] { this.screenRenderSemaphore }
                 }
             }, null);
 
@@ -167,6 +197,20 @@ namespace GBJam5.Services
                 WaitSemaphores = new[] { this.renderFinishedSemaphore },
                 Swapchains = new[] { this.swapChain }
             });
+        }
+
+        private void UpdateUbo(UniformBufferObject ubo)
+        {
+            uint uboSize = MemUtil.SizeOf<UniformBufferObject>();
+
+            IntPtr memoryBuffer = IntPtr.Zero;
+            this.uniformStagingBufferMemory.MapMemory(0, uboSize, MemoryMapFlags.None, ref memoryBuffer);
+
+            MemUtil.WriteToPtr(memoryBuffer, ubo);
+
+            this.uniformStagingBufferMemory.UnmapMemory();
+
+            this.CopyBuffer(this.uniformStagingBuffer, this.uniformBuffer, uboSize);
         }
 
         public override void Stop()
@@ -349,7 +393,68 @@ namespace GBJam5.Services
                         {
                             Format = this.swapChainFormat,
                             Samples = SampleCountFlags.SampleCount1,
-                            LoadOp = AttachmentLoadOp.Clear,
+                            LoadOp = AttachmentLoadOp.DontCare,
+                            StoreOp = AttachmentStoreOp.Store,
+                            StencilLoadOp = AttachmentLoadOp.DontCare,
+                            StencilStoreOp = AttachmentStoreOp.DontCare,
+                            InitialLayout = ImageLayout.Undefined,
+                            FinalLayout = ImageLayout.PresentSource
+                        },
+                    },
+                Subpasses = new[]
+                       {
+                        new SubpassDescription
+                        {
+                            DepthStencilAttachment = new AttachmentReference
+                            {
+                                Attachment = Constants.AttachmentUnused
+                            },
+                            PipelineBindPoint = PipelineBindPoint.Graphics,
+                            ColorAttachments = new []
+                            {
+                                new AttachmentReference
+                                {
+                                    Attachment = 0,
+                                    Layout = ImageLayout.ColorAttachmentOptimal
+                                }
+                            }
+                        }
+                    },
+                Dependencies = new[]
+                       {
+                        new SubpassDependency
+                        {
+                            SourceSubpass = Constants.SubpassExternal,
+                            DestinationSubpass = 0,
+                            SourceStageMask = PipelineStageFlags.BottomOfPipe,
+                            SourceAccessMask = AccessFlags.MemoryRead,
+                            DestinationStageMask = PipelineStageFlags.ColorAttachmentOutput,
+                            DestinationAccessMask = AccessFlags.ColorAttachmentRead | AccessFlags.ColorAttachmentWrite
+                        },
+                        new SubpassDependency
+                        {
+                            SourceSubpass = 0,
+                            DestinationSubpass = Constants.SubpassExternal,
+                            SourceStageMask = PipelineStageFlags.ColorAttachmentOutput,
+                            SourceAccessMask = AccessFlags.ColorAttachmentRead | AccessFlags.ColorAttachmentWrite,
+                            DestinationStageMask = PipelineStageFlags.BottomOfPipe,
+                            DestinationAccessMask = AccessFlags.MemoryRead
+                        }
+                    }
+            });
+        }
+
+        private void CreateOffScreenRenderPass()
+        {
+            this.offScreenRenderPass = device.CreateRenderPass(new RenderPassCreateInfo
+            {
+                Attachments = new[]
+                       {
+                        new AttachmentDescription
+                        {
+                            Format = Format.R8G8B8A8UNorm,
+                            Samples = SampleCountFlags.SampleCount1,
+                            LoadOp = AttachmentLoadOp.DontCare,
                             StoreOp = AttachmentStoreOp.Store,
                             StencilLoadOp = AttachmentLoadOp.DontCare,
                             StencilStoreOp = AttachmentStoreOp.DontCare,
@@ -454,102 +559,202 @@ namespace GBJam5.Services
                 }
             });
 
-            this.pipeline = device.CreateGraphicsPipelines(null, new[]
+            var pipelines = device.CreateGraphicsPipelines(null, new[]
             {
-                    new GraphicsPipelineCreateInfo
+                new GraphicsPipelineCreateInfo
+                {
+                    Layout = this.pipelineLayout,
+                    RenderPass = this.renderPass,
+                    Subpass = 0,
+                    VertexInputState = new PipelineVertexInputStateCreateInfo()
                     {
-                        Layout = this.pipelineLayout,
-                        RenderPass = this.renderPass,
-                        Subpass = 0,
-                        VertexInputState = new PipelineVertexInputStateCreateInfo()
+                        VertexBindingDescriptions = new [] { bindingDescription },
+                        VertexAttributeDescriptions = attributeDescriptions
+                    },
+                    InputAssemblyState = new PipelineInputAssemblyStateCreateInfo
+                    {
+                        PrimitiveRestartEnable = false,
+                        Topology = PrimitiveTopology.TriangleList
+                    },
+                    ViewportState = new PipelineViewportStateCreateInfo
+                    {
+                        Viewports = new[]
                         {
-                            VertexBindingDescriptions = new [] { bindingDescription },
-                            VertexAttributeDescriptions = attributeDescriptions
-                        },
-                        InputAssemblyState = new PipelineInputAssemblyStateCreateInfo
-                        {
-                            PrimitiveRestartEnable = false,
-                            Topology = PrimitiveTopology.TriangleList
-                        },
-                        ViewportState = new PipelineViewportStateCreateInfo
-                        {
-                            Viewports = new[]
+                            new Viewport
                             {
-                                new Viewport
-                                {
-                                    X = 0f,
-                                    Y = 0f,
-                                    Width = this.swapChainExtent.Width,
-                                    Height = this.swapChainExtent.Height,
-                                    MaxDepth = 1,
-                                    MinDepth = 0
-                                }
-                            },
-                            Scissors = new[]
-                            {
-                                new Rect2D
-                                {
-                                    Offset = new Offset2D(),
-                                    Extent= this.swapChainExtent
-                                }
+                                X = 0f,
+                                Y = 0f,
+                                Width = this.swapChainExtent.Width,
+                                Height = this.swapChainExtent.Height,
+                                MaxDepth = 1,
+                                MinDepth = 0
                             }
                         },
-                        RasterizationState = new PipelineRasterizationStateCreateInfo
+                        Scissors = new[]
                         {
-                            DepthClampEnable = false,
-                            RasterizerDiscardEnable = false,
-                            PolygonMode = PolygonMode.Fill,
-                            LineWidth = 1,
-                            CullMode = CullModeFlags.None,
-                            FrontFace = FrontFace.CounterClockwise,
-                            DepthBiasEnable = false
-                        },
-                        MultisampleState = new PipelineMultisampleStateCreateInfo
-                        {
-                            SampleShadingEnable = false,
-                            RasterizationSamples = SampleCountFlags.SampleCount1,
-                            MinSampleShading = 1
-                        },
-                        ColorBlendState = new PipelineColorBlendStateCreateInfo
-                        {
-                            Attachments = new[]
+                            new Rect2D
                             {
-                                new PipelineColorBlendAttachmentState
-                                {
-                                    ColorWriteMask = ColorComponentFlags.R
-                                                        | ColorComponentFlags.G
-                                                        | ColorComponentFlags.B
-                                                        | ColorComponentFlags.A,
-                                    BlendEnable = false,
-                                    SourceColorBlendFactor = BlendFactor.One,
-                                    DestinationColorBlendFactor = BlendFactor.Zero,
-                                    ColorBlendOp = BlendOp.Add,
-                                    SourceAlphaBlendFactor = BlendFactor.One,
-                                    DestinationAlphaBlendFactor = BlendFactor.Zero,
-                                    AlphaBlendOp = BlendOp.Add
-                                }
-                            },
-                            LogicOpEnable = false,
-                            LogicOp = LogicOp.Copy,
-                            BlendConstants = new float[] {0,0,0,0}
-                        },
-                        Stages = new[]
-                        {
-                            new PipelineShaderStageCreateInfo
-                            {
-                                Stage = ShaderStageFlags.Vertex,
-                                Module = vertShader,
-                                Name = "main"
-                            },
-                            new PipelineShaderStageCreateInfo
-                            {
-                                Stage = ShaderStageFlags.Fragment,
-                                Module = fragShader,
-                                Name = "main"
+                                Offset = new Offset2D(),
+                                Extent= this.swapChainExtent
                             }
                         }
+                    },
+                    RasterizationState = new PipelineRasterizationStateCreateInfo
+                    {
+                        DepthClampEnable = false,
+                        RasterizerDiscardEnable = false,
+                        PolygonMode = PolygonMode.Fill,
+                        LineWidth = 1,
+                        CullMode = CullModeFlags.None,
+                        FrontFace = FrontFace.CounterClockwise,
+                        DepthBiasEnable = false
+                    },
+                    MultisampleState = new PipelineMultisampleStateCreateInfo
+                    {
+                        SampleShadingEnable = false,
+                        RasterizationSamples = SampleCountFlags.SampleCount1,
+                        MinSampleShading = 1
+                    },
+                    ColorBlendState = new PipelineColorBlendStateCreateInfo
+                    {
+                        Attachments = new[]
+                        {
+                            new PipelineColorBlendAttachmentState
+                            {
+                                ColorWriteMask = ColorComponentFlags.R
+                                                    | ColorComponentFlags.G
+                                                    | ColorComponentFlags.B
+                                                    | ColorComponentFlags.A,
+                                BlendEnable = false,
+                                SourceColorBlendFactor = BlendFactor.One,
+                                DestinationColorBlendFactor = BlendFactor.Zero,
+                                ColorBlendOp = BlendOp.Add,
+                                SourceAlphaBlendFactor = BlendFactor.One,
+                                DestinationAlphaBlendFactor = BlendFactor.Zero,
+                                AlphaBlendOp = BlendOp.Add
+                            }
+                        },
+                        LogicOpEnable = false,
+                        LogicOp = LogicOp.Copy,
+                        BlendConstants = new float[] {0,0,0,0}
+                    },
+                    Stages = new[]
+                    {
+                        new PipelineShaderStageCreateInfo
+                        {
+                            Stage = ShaderStageFlags.Vertex,
+                            Module = vertShader,
+                            Name = "main"
+                        },
+                        new PipelineShaderStageCreateInfo
+                        {
+                            Stage = ShaderStageFlags.Fragment,
+                            Module = fragShader,
+                            Name = "main"
+                        }
                     }
-                }).Single();
+                },
+                new GraphicsPipelineCreateInfo
+                {
+                    Layout = this.pipelineLayout,
+                    RenderPass = this.offScreenRenderPass,
+                    Subpass = 0,
+                    VertexInputState = new PipelineVertexInputStateCreateInfo()
+                    {
+                        VertexBindingDescriptions = new [] { bindingDescription },
+                        VertexAttributeDescriptions = attributeDescriptions
+                    },
+                    InputAssemblyState = new PipelineInputAssemblyStateCreateInfo
+                    {
+                        PrimitiveRestartEnable = false,
+                        Topology = PrimitiveTopology.TriangleList
+                    },
+                    ViewportState = new PipelineViewportStateCreateInfo
+                    {
+                        Viewports = new[]
+                        {
+                            new Viewport
+                            {
+                                X = 0f,
+                                Y = 0f,
+                                Width = gbTextureWidth,
+                                Height = gbTextureHeight,
+                                MaxDepth = 1,
+                                MinDepth = 0
+                            }
+                        },
+                        Scissors = new[]
+                        {
+                            new Rect2D
+                            {
+                                Offset = new Offset2D(),
+                                Extent= new Extent2D
+                                {
+                                    Width = gbTextureWidth,
+                                    Height = gbTextureHeight
+                                }
+                            }
+                        }
+                    },
+                    RasterizationState = new PipelineRasterizationStateCreateInfo
+                    {
+                        DepthClampEnable = false,
+                        RasterizerDiscardEnable = false,
+                        PolygonMode = PolygonMode.Fill,
+                        LineWidth = 1,
+                        CullMode = CullModeFlags.None,
+                        FrontFace = FrontFace.CounterClockwise,
+                        DepthBiasEnable = false
+                    },
+                    MultisampleState = new PipelineMultisampleStateCreateInfo
+                    {
+                        SampleShadingEnable = false,
+                        RasterizationSamples = SampleCountFlags.SampleCount1,
+                        MinSampleShading = 1
+                    },
+                    ColorBlendState = new PipelineColorBlendStateCreateInfo
+                    {
+                        Attachments = new[]
+                        {
+                            new PipelineColorBlendAttachmentState
+                            {
+                                ColorWriteMask = ColorComponentFlags.R
+                                                    | ColorComponentFlags.G
+                                                    | ColorComponentFlags.B
+                                                    | ColorComponentFlags.A,
+                                BlendEnable = false,
+                                SourceColorBlendFactor = BlendFactor.One,
+                                DestinationColorBlendFactor = BlendFactor.Zero,
+                                ColorBlendOp = BlendOp.Add,
+                                SourceAlphaBlendFactor = BlendFactor.One,
+                                DestinationAlphaBlendFactor = BlendFactor.Zero,
+                                AlphaBlendOp = BlendOp.Add
+                            }
+                        },
+                        LogicOpEnable = false,
+                        LogicOp = LogicOp.Copy,
+                        BlendConstants = new float[] {0,0,0,0}
+                    },
+                    Stages = new[]
+                    {
+                        new PipelineShaderStageCreateInfo
+                        {
+                            Stage = ShaderStageFlags.Vertex,
+                            Module = vertShader,
+                            Name = "main"
+                        },
+                        new PipelineShaderStageCreateInfo
+                        {
+                            Stage = ShaderStageFlags.Fragment,
+                            Module = fragShader,
+                            Name = "main"
+                        }
+                    }
+                }
+            });
+
+            this.pipeline = pipelines[0];
+            this.offScreenPipeline = pipelines[1];
         }
 
         private void CreateFrameBuffers()
@@ -562,6 +767,18 @@ namespace GBJam5.Services
                 Height = this.swapChainExtent.Height,
                 Width = this.swapChainExtent.Width
             })).ToArray();
+        }
+
+        private void CreateOffScreenFrameBuffer()
+        {
+            this.offScreenFrameBuffer = device.CreateFramebuffer(new FramebufferCreateInfo
+            {
+                RenderPass = this.offScreenRenderPass,
+                Attachments = new[] { this.offScreenImageView },
+                Layers = 1,
+                Height = gbTextureHeight,
+                Width = gbTextureWidth
+            });
         }
 
         private void CreateCommandPools()
@@ -615,7 +832,7 @@ namespace GBJam5.Services
 
             this.stagingImageMemory.UnmapMemory();
 
-            this.CreateImage(textureWidth, textureHeight, Format.R8G8B8A8UNorm, ImageTiling.Optimal, ImageUsageFlags.TransferDestination | ImageUsageFlags.Sampled, MemoryPropertyFlags.DeviceLocal, out this.textureImage, out this.textureImageMemory);
+            this.CreateImage(gbTextureWidth, gbTextureHeight, Format.R8G8B8A8UNorm, ImageTiling.Optimal, ImageUsageFlags.TransferDestination | ImageUsageFlags.Sampled, MemoryPropertyFlags.DeviceLocal, out this.textureImage, out this.textureImageMemory);
 
             this.TransitionImageLayout(this.stagingImage, Format.R8G8B8A8UNorm, ImageLayout.Preinitialized, ImageLayout.TransferSourceOptimal);
             this.TransitionImageLayout(this.textureImage, Format.R8G8B8A8UNorm, ImageLayout.Preinitialized, ImageLayout.TransferDestinationOptimal);
@@ -629,22 +846,32 @@ namespace GBJam5.Services
             this.textureImageView = this.CreateImageView(this.textureImage, Format.R8G8B8A8UNorm);
         }
 
+        private void CreateOffScreenImage()
+        {
+            this.CreateImage(gbTextureWidth, gbTextureHeight, Format.R8G8B8A8UNorm, ImageTiling.Optimal, ImageUsageFlags.ColorAttachment | ImageUsageFlags.Sampled, MemoryPropertyFlags.DeviceLocal, out this.offScreenImage, out this.offScreenImageMemory);
+        }
+
+        private void CreateOffScreenImageView()
+        {
+            this.offScreenImageView = this.CreateImageView(this.offScreenImage, Format.R8G8B8A8UNorm);
+        }
+
         private void CreateTextureSampler()
         {
             this.textureSampler = this.device.CreateSampler(new SamplerCreateInfo
             {
                 MagFilter = Filter.Nearest,
                 MinFilter = Filter.Nearest,
-                AddressModeU = SamplerAddressMode.Repeat,
-                AddressModeV = SamplerAddressMode.Repeat,
-                AddressModeW = SamplerAddressMode.Repeat,
-                AnisotropyEnable = true,
-                MaxAnisotropy = 16,
-                BorderColor = BorderColor.IntOpaqueBlack,
+                AddressModeU = SamplerAddressMode.ClampToBorder,
+                AddressModeV = SamplerAddressMode.ClampToBorder,
+                AddressModeW = SamplerAddressMode.ClampToBorder,
+                AnisotropyEnable = false,
+                MaxAnisotropy = 0,
+                BorderColor = BorderColor.FloatTransparentBlack,
                 UnnormalizedCoordinates = false,
                 CompareEnable = false,
                 CompareOp = CompareOp.Always,
-                MipmapMode = SamplerMipmapMode.Linear,
+                MipmapMode = SamplerMipmapMode.Nearest,
                 MipLodBias = 0f,
                 MinLod = 0f,
                 MaxLod = 0f
@@ -713,29 +940,33 @@ namespace GBJam5.Services
                 {
                     new DescriptorPoolSize
                     {
-                        DescriptorCount = 1,
+                        DescriptorCount = 2,
                         Type = DescriptorType.UniformBuffer
                     },
                     new DescriptorPoolSize
                     {
-                        DescriptorCount = 1,
+                        DescriptorCount = 2,
                         Type = DescriptorType.CombinedImageSampler
                     }
                 },
-                MaxSets = 1
+                MaxSets = 2
             });
         }
 
         private void CreateDescriptorSet()
         {
-            this.descriptorSet = this.device.AllocateDescriptorSets(new DescriptorSetAllocateInfo
+            var descriptorSets = this.device.AllocateDescriptorSets(new DescriptorSetAllocateInfo
             {
                 DescriptorPool = this.descriptorPool,
                 SetLayouts = new[]
                 {
+                    this.descriptorSetLayout,
                     this.descriptorSetLayout
                 }
-            }).Single();
+            });
+
+            this.descriptorSet = descriptorSets[0];
+            this.offScreenDescriptorSet = descriptorSets[1];
 
             this.device.UpdateDescriptorSets(new[]
             {
@@ -761,7 +992,7 @@ namespace GBJam5.Services
                     {
                         new DescriptorImageInfo
                         {
-                            ImageView = this.textureImageView,
+                            ImageView = this.offScreenImageView,
                             Sampler = this.textureSampler,
                             ImageLayout = ImageLayout.ShaderReadOnlyOptimal
                         }
@@ -772,11 +1003,118 @@ namespace GBJam5.Services
                     DescriptorType = DescriptorType.CombinedImageSampler
                 }
             }, null);
+
+            this.device.UpdateDescriptorSets(new[]
+            {
+                new WriteDescriptorSet
+                {
+                    BufferInfo = new []
+                    {
+                        new DescriptorBufferInfo
+                        {
+                            Buffer = this.uniformBuffer,
+                            Offset = 0,
+                            Range = MemUtil.SizeOf<UniformBufferObject>()
+                        }
+                    },
+                    DestinationSet = this.offScreenDescriptorSet,
+                    DestinationBinding = 0,
+                    DestinationArrayElement = 0,
+                    DescriptorType = DescriptorType.UniformBuffer
+                },
+                new WriteDescriptorSet
+                {
+                    ImageInfo = new []
+                    {
+                        new DescriptorImageInfo
+                        {
+                            ImageView = this.textureImageView,
+                            Sampler = this.textureSampler,
+                            ImageLayout = ImageLayout.ShaderReadOnlyOptimal
+                        }
+                    },
+                    DestinationSet = this.offScreenDescriptorSet,
+                    DestinationBinding = 1,
+                    DestinationArrayElement = 0,
+                    DescriptorType = DescriptorType.CombinedImageSampler
+                }
+            }, null);
         }
 
         private void CreateCommandBuffers()
         {
             this.commandPool.Reset(CommandPoolResetFlags.ReleaseResources);
+
+            this.offScreenCommandBuffer = device.AllocateCommandBuffers(new CommandBufferAllocateInfo
+            {
+                CommandBufferCount = 1,
+                CommandPool = this.commandPool,
+                Level = CommandBufferLevel.Primary
+            }).Single();
+
+            offScreenCommandBuffer.Begin(new CommandBufferBeginInfo
+            {
+                Flags = CommandBufferUsageFlags.SimultaneousUse
+            });
+
+            offScreenCommandBuffer.BeginRenderPass(new RenderPassBeginInfo
+            {
+                RenderPass = this.offScreenRenderPass,
+                Framebuffer = this.offScreenFrameBuffer,
+                RenderArea = new Rect2D
+                {
+                    Offset = new Offset2D(),
+                    Extent = new Extent2D
+                    {
+                        Width = gbTextureWidth,
+                        Height = gbTextureHeight
+                    }
+                },
+                ClearValues = new ClearValue[]
+                {
+                        new ClearColorValue(0f, 0f, 0f, 1f)
+                }
+            }, SubpassContents.Inline);
+
+            offScreenCommandBuffer.ClearAttachments(new[]
+            {
+                    new ClearAttachment
+                    {
+                        AspectMask = ImageAspectFlags.Color,
+                        ClearValue = new ClearColorValue(0f, 0f, 1f, 1f),
+                        ColorAttachment = 0
+                    }
+                },
+            new[]
+            {
+                    new ClearRect
+                    {
+                        BaseArrayLayer = 0,
+                        LayerCount = 1,
+                        Rect = new Rect2D
+                        {
+                            Extent = new Extent2D
+                            {
+                                Width = gbTextureWidth,
+                                Height = gbTextureHeight
+                            }
+                        }
+                    }
+            });
+
+            offScreenCommandBuffer.BindPipeline(PipelineBindPoint.Graphics, this.offScreenPipeline);
+
+            offScreenCommandBuffer.BindVertexBuffers(0, new[] { this.vertexBuffer }, new DeviceSize[] { 0 });
+
+            offScreenCommandBuffer.BindIndexBuffer(this.indexBuffer, 0, IndexType.UInt16);
+
+            offScreenCommandBuffer.BindDescriptorSets(PipelineBindPoint.Graphics, this.pipelineLayout, 0, new[] { this.offScreenDescriptorSet }, null);
+
+            offScreenCommandBuffer.DrawIndexed((uint)this.quadIndices.Length, 1, 0, 0, 0);
+
+            offScreenCommandBuffer.EndRenderPass();
+
+            offScreenCommandBuffer.End();
 
             this.commandBuffers = device.AllocateCommandBuffers(new CommandBufferAllocateInfo
             {
@@ -809,6 +1147,28 @@ namespace GBJam5.Services
                     }
                 }, SubpassContents.Inline);
 
+                commandBuffer.ClearAttachments(new[]
+                {
+                    new ClearAttachment
+                    {
+                        AspectMask = ImageAspectFlags.Color,
+                        ClearValue = new ClearColorValue(0.25f, 0.5f, 0f, 1f),
+                        ColorAttachment = 0
+                    }
+                },
+                new[]
+                {
+                    new ClearRect
+                    {
+                        BaseArrayLayer = 0,
+                        LayerCount = 1,
+                        Rect = new Rect2D
+                        {
+                            Extent = this.swapChainExtent
+                        }
+                    }
+                });
+
                 commandBuffer.BindPipeline(PipelineBindPoint.Graphics, this.pipeline);
 
                 commandBuffer.BindVertexBuffers(0, new[] { this.vertexBuffer }, new DeviceSize[] { 0 });
@@ -827,6 +1187,7 @@ namespace GBJam5.Services
 
         private void CreateSemaphores()
         {
+            this.screenRenderSemaphore = device.CreateSemaphore(new SemaphoreCreateInfo());
             this.imageAvailableSemaphore = device.CreateSemaphore(new SemaphoreCreateInfo());
             this.renderFinishedSemaphore = device.CreateSemaphore(new SemaphoreCreateInfo());
         }
@@ -835,7 +1196,7 @@ namespace GBJam5.Services
         {
             this.logging.Log($"{flags}: {message}");
 
-            return false;
+            return true;
         }
 
         private uint FindMemoryType(uint typeFilter, MemoryPropertyFlags flags)
