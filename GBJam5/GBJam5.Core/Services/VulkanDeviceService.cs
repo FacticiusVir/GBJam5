@@ -55,9 +55,7 @@ namespace GBJam5.Services
         private RenderPass offScreenRenderPass;
         private DescriptorSetLayout descriptorSetLayout;
         private PipelineLayout pipelineLayout;
-        private Pipeline offScreenPipeline;
         private Pipeline pipeline;
-        private Framebuffer offScreenFrameBuffer;
         private Framebuffer[] frameBuffers;
         private CommandPool transientCommandPool;
         private CommandPool commandPool;
@@ -72,9 +70,6 @@ namespace GBJam5.Services
         private Image textureImage;
         private DeviceMemory textureImageMemory;
         private ImageView textureImageView;
-        private Image offScreenImage;
-        private DeviceMemory offScreenImageMemory;
-        private ImageView offScreenImageView;
         private Sampler textureSampler;
         private DescriptorPool descriptorPool;
         private DescriptorSet descriptorSet;
@@ -129,15 +124,12 @@ namespace GBJam5.Services
             this.CreateCommandPools();
             this.CreateTextureImage();
             this.CreateTextureImageView();
-            this.CreateOffScreenImage();
-            this.CreateOffScreenImageView();
             this.CreateTextureSampler();
-            this.CreateOffScreenFrameBuffer();
             this.CreateBuffers();
             this.CreateDescriptorPool();
+            this.CreateOffScreenRenderPipeline();
             this.CreateDescriptorSet();
             this.CreateCommandBuffers();
-            this.CreateOffScreenRenderPipeline();
             this.CreateSemaphores();
 
             this.updateLoop.Register(this, UpdateStage.Render);
@@ -496,59 +488,59 @@ namespace GBJam5.Services
             this.offScreenRenderPass = device.CreateRenderPass(new RenderPassCreateInfo
             {
                 Attachments = new[]
-                       {
-                        new AttachmentDescription
-                        {
-                            Format = Format.R8G8B8A8UNorm,
-                            Samples = SampleCountFlags.SampleCount1,
-                            LoadOp = AttachmentLoadOp.DontCare,
-                            StoreOp = AttachmentStoreOp.Store,
-                            StencilLoadOp = AttachmentLoadOp.DontCare,
-                            StencilStoreOp = AttachmentStoreOp.DontCare,
-                            InitialLayout = ImageLayout.Undefined,
-                            FinalLayout = ImageLayout.PresentSource
-                        },
+                {
+                    new AttachmentDescription
+                    {
+                        Format = Format.R8G8B8A8UNorm,
+                        Samples = SampleCountFlags.SampleCount1,
+                        LoadOp = AttachmentLoadOp.DontCare,
+                        StoreOp = AttachmentStoreOp.Store,
+                        StencilLoadOp = AttachmentLoadOp.DontCare,
+                        StencilStoreOp = AttachmentStoreOp.DontCare,
+                        InitialLayout = ImageLayout.Undefined,
+                        FinalLayout = ImageLayout.ColorAttachmentOptimal
                     },
+                },
                 Subpasses = new[]
-                       {
-                        new SubpassDescription
+                {
+                    new SubpassDescription
+                    {
+                        DepthStencilAttachment = new AttachmentReference
                         {
-                            DepthStencilAttachment = new AttachmentReference
+                            Attachment = Constants.AttachmentUnused
+                        },
+                        PipelineBindPoint = PipelineBindPoint.Graphics,
+                        ColorAttachments = new []
+                        {
+                            new AttachmentReference
                             {
-                                Attachment = Constants.AttachmentUnused
-                            },
-                            PipelineBindPoint = PipelineBindPoint.Graphics,
-                            ColorAttachments = new []
-                            {
-                                new AttachmentReference
-                                {
-                                    Attachment = 0,
-                                    Layout = ImageLayout.ColorAttachmentOptimal
-                                }
+                                Attachment = 0,
+                                Layout = ImageLayout.ColorAttachmentOptimal
                             }
                         }
-                    },
-                Dependencies = new[]
-                       {
-                        new SubpassDependency
-                        {
-                            SourceSubpass = Constants.SubpassExternal,
-                            DestinationSubpass = 0,
-                            SourceStageMask = PipelineStageFlags.BottomOfPipe,
-                            SourceAccessMask = AccessFlags.MemoryRead,
-                            DestinationStageMask = PipelineStageFlags.ColorAttachmentOutput,
-                            DestinationAccessMask = AccessFlags.ColorAttachmentRead | AccessFlags.ColorAttachmentWrite
-                        },
-                        new SubpassDependency
-                        {
-                            SourceSubpass = 0,
-                            DestinationSubpass = Constants.SubpassExternal,
-                            SourceStageMask = PipelineStageFlags.ColorAttachmentOutput,
-                            SourceAccessMask = AccessFlags.ColorAttachmentRead | AccessFlags.ColorAttachmentWrite,
-                            DestinationStageMask = PipelineStageFlags.BottomOfPipe,
-                            DestinationAccessMask = AccessFlags.MemoryRead
-                        }
                     }
+                },
+                Dependencies = new[]
+                {
+                    new SubpassDependency
+                    {
+                        SourceSubpass = Constants.SubpassExternal,
+                        DestinationSubpass = 0,
+                        SourceStageMask = PipelineStageFlags.BottomOfPipe,
+                        SourceAccessMask = AccessFlags.MemoryRead,
+                        DestinationStageMask = PipelineStageFlags.ColorAttachmentOutput,
+                        DestinationAccessMask = AccessFlags.ColorAttachmentRead | AccessFlags.ColorAttachmentWrite
+                    },
+                    new SubpassDependency
+                    {
+                        SourceSubpass = 0,
+                        DestinationSubpass = Constants.SubpassExternal,
+                        SourceStageMask = PipelineStageFlags.ColorAttachmentOutput,
+                        SourceAccessMask = AccessFlags.ColorAttachmentRead | AccessFlags.ColorAttachmentWrite,
+                        DestinationStageMask = PipelineStageFlags.BottomOfPipe,
+                        DestinationAccessMask = AccessFlags.MemoryRead
+                    }
+                }
             });
         }
 
@@ -801,7 +793,6 @@ namespace GBJam5.Services
             });
 
             this.pipeline = pipelines[0];
-            this.offScreenPipeline = pipelines[1];
         }
 
         private void CreateFrameBuffers()
@@ -815,19 +806,7 @@ namespace GBJam5.Services
                 Width = this.swapChainExtent.Width
             })).ToArray();
         }
-
-        private void CreateOffScreenFrameBuffer()
-        {
-            this.offScreenFrameBuffer = device.CreateFramebuffer(new FramebufferCreateInfo
-            {
-                RenderPass = this.offScreenRenderPass,
-                Attachments = new[] { this.offScreenImageView },
-                Layers = 1,
-                Height = gbTextureHeight,
-                Width = gbTextureWidth
-            });
-        }
-
+        
         private void CreateCommandPools()
         {
             QueueFamilyIndices queueFamilies = FindQueueFamilies(this.physicalDevice);
@@ -892,17 +871,7 @@ namespace GBJam5.Services
         {
             this.textureImageView = this.CreateImageView(this.textureImage, Format.R8G8B8A8UNorm);
         }
-
-        private void CreateOffScreenImage()
-        {
-            this.CreateImage(gbTextureWidth, gbTextureHeight, Format.R8G8B8A8UNorm, ImageTiling.Optimal, ImageUsageFlags.ColorAttachment | ImageUsageFlags.Sampled, MemoryPropertyFlags.DeviceLocal, out this.offScreenImage, out this.offScreenImageMemory);
-        }
-
-        private void CreateOffScreenImageView()
-        {
-            this.offScreenImageView = this.CreateImageView(this.offScreenImage, Format.R8G8B8A8UNorm);
-        }
-
+        
         private void CreateTextureSampler()
         {
             this.textureSampler = this.device.CreateSampler(new SamplerCreateInfo
@@ -994,7 +963,7 @@ namespace GBJam5.Services
                     {
                         new DescriptorImageInfo
                         {
-                            ImageView = this.offScreenImageView,
+                            ImageView = this.offScreenRenderPipeline.ImageView,
                             Sampler = this.textureSampler,
                             ImageLayout = ImageLayout.ShaderReadOnlyOptimal
                         }
@@ -1082,11 +1051,7 @@ namespace GBJam5.Services
         {
             this.offScreenRenderPipeline = new Vulkan.OffScreenRenderPipeline(this,
                                                                                 this.commandPool,
-                                                                                new[] { this.offScreenFrameBuffer },
-                                                                                new Extent2D { Width = gbTextureWidth, Height = gbTextureHeight },
-                                                                                new ClearColorValue(0f, 0f, 0f, 1f),
-                                                                                this.offScreenPipeline,
-                                                                                this.pipelineLayout,
+                                                                                new ClearColorValue(0f, 0f, 1f, 1f),
                                                                                 this.offScreenRenderPass,
                                                                                 this.descriptorPool,
                                                                                 this.textureImageView,
@@ -1216,7 +1181,7 @@ namespace GBJam5.Services
                     && FindQueueFamilies(device).IsComplete;
         }
 
-        private static uint[] LoadShaderData(string filePath, out int codeSize)
+        public uint[] LoadShaderData(string filePath, out int codeSize)
         {
             var fileBytes = System.IO.File.ReadAllBytes(filePath);
             var shaderData = new uint[(int)Math.Ceiling(fileBytes.Length / 4f)];
@@ -1366,7 +1331,7 @@ namespace GBJam5.Services
             this.transientCommandPool.FreeCommandBuffers(transferBuffers);
         }
 
-        private void CreateImage(uint width, uint height, Format format, ImageTiling imageTiling, ImageUsageFlags usage, MemoryPropertyFlags properties, out Image image, out DeviceMemory imageMemory)
+        public void CreateImage(uint width, uint height, Format format, ImageTiling imageTiling, ImageUsageFlags usage, MemoryPropertyFlags properties, out Image image, out DeviceMemory imageMemory)
         {
             image = this.device.CreateImage(new ImageCreateInfo
             {
@@ -1399,7 +1364,7 @@ namespace GBJam5.Services
             image.BindMemory(imageMemory, 0);
         }
 
-        private ImageView CreateImageView(Image image, Format format)
+        public ImageView CreateImageView(Image image, Format format)
         {
             return device.CreateImageView(new ImageViewCreateInfo
             {
