@@ -3,21 +3,16 @@ using System.Linq;
 
 namespace GBJam5.Vulkan
 {
-    internal class OffScreenRenderPipeline
+    internal class SwapchainRenderPipeline
     {
-        private const uint gbTextureWidth = 160;
-        private const uint gbTextureHeight = 144;
-
         private RenderPass renderPass;
         private DescriptorSetLayout descriptorSetLayout;
         private ShaderModule vertexShader;
         private ShaderModule fragmentShader;
         private PipelineLayout pipelineLayout;
         private Pipeline pipeline;
-        private Image offScreenImage;
-        private DeviceMemory offScreenImageMemory;
-        private ImageView offScreenImageView;
-        private Framebuffer offScreenFrameBuffer;
+        private ImageView[] swapchainImageViews;
+        private Framebuffer[] swapchainFrameBuffers;
         private Buffer vertexBuffer;
         private DeviceMemory vertexBufferMemory;
         private Buffer indexBuffer;
@@ -26,33 +21,30 @@ namespace GBJam5.Vulkan
         private DeviceMemory uniformBufferMemory;
         private DescriptorSet descriptorSet;
 
-        public OffScreenRenderPipeline(IVulkanInstance instance,
+        public SwapchainRenderPipeline(IVulkanInstance instance,
                                         CommandPool commandPool,
                                         ClearColorValue clearColour,
                                         DescriptorPool descriptorPool,
-                                        ImageView textureImageView,
+                                        Swapchain swapchain,
+                                        Extent2D swapchainExtent,
+                                        Format swapchainFormat,
+                                        ImageView offScreenImageView,
                                         Sampler textureSampler)
         {
-            Extent2D imageExtent = new Extent2D
-            {
-                Width = gbTextureWidth,
-                Height = gbTextureHeight
-            };
-
             this.renderPass = instance.Device.CreateRenderPass(new RenderPassCreateInfo
             {
                 Attachments = new[]
                 {
                     new AttachmentDescription
                     {
-                        Format = Format.R8G8B8A8UNorm,
+                        Format = swapchainFormat,
                         Samples = SampleCountFlags.SampleCount1,
                         LoadOp = AttachmentLoadOp.DontCare,
                         StoreOp = AttachmentStoreOp.Store,
                         StencilLoadOp = AttachmentLoadOp.DontCare,
                         StencilStoreOp = AttachmentStoreOp.DontCare,
                         InitialLayout = ImageLayout.Undefined,
-                        FinalLayout = ImageLayout.ColorAttachmentOptimal
+                        FinalLayout = ImageLayout.PresentSource
                     },
                 },
                 Subpasses = new[]
@@ -171,8 +163,8 @@ namespace GBJam5.Vulkan
                             {
                                 X = 0f,
                                 Y = 0f,
-                                Width = gbTextureWidth,
-                                Height = gbTextureHeight,
+                                Width = swapchainExtent.Width,
+                                Height = swapchainExtent.Height,
                                 MaxDepth = 1,
                                 MinDepth = 0
                             }
@@ -182,11 +174,7 @@ namespace GBJam5.Vulkan
                             new Rect2D
                             {
                                 Offset = new Offset2D(),
-                                Extent= new Extent2D
-                                {
-                                    Width = gbTextureWidth,
-                                    Height = gbTextureHeight
-                                }
+                                Extent= swapchainExtent
                             }
                         }
                     },
@@ -247,18 +235,18 @@ namespace GBJam5.Vulkan
                 }
             }).Single();
 
-            instance.CreateImage(gbTextureWidth, gbTextureHeight, Format.R8G8B8A8UNorm, ImageTiling.Optimal, ImageUsageFlags.ColorAttachment | ImageUsageFlags.Sampled, MemoryPropertyFlags.DeviceLocal, out this.offScreenImage, out this.offScreenImageMemory);
+            var swapchainImages = swapchain.GetImages();
 
-            this.offScreenImageView = instance.CreateImageView(this.offScreenImage, Format.R8G8B8A8UNorm);
+            this.swapchainImageViews = swapchainImages.Select(image => instance.CreateImageView(image, swapchainFormat)).ToArray();
 
-            this.offScreenFrameBuffer = instance.Device.CreateFramebuffer(new FramebufferCreateInfo
+            this.swapchainFrameBuffers = this.swapchainImageViews.Select(imageView => instance.Device.CreateFramebuffer(new FramebufferCreateInfo
             {
                 RenderPass = renderPass,
-                Attachments = new[] { this.offScreenImageView },
+                Attachments = new[] { imageView },
                 Layers = 1,
-                Height = gbTextureHeight,
-                Width = gbTextureWidth
-            });
+                Height = swapchainExtent.Height,
+                Width = swapchainExtent.Width
+            })).ToArray();
 
             instance.CreateBuffer(MemUtil.SizeOf<Vertex>() * (uint)QuadData.Vertices.Length, BufferUsageFlags.TransferDestination | BufferUsageFlags.VertexBuffer, MemoryPropertyFlags.DeviceLocal, out this.vertexBuffer, out this.vertexBufferMemory);
 
@@ -268,8 +256,8 @@ namespace GBJam5.Vulkan
 
             instance.UpdateBuffer(this.indexBuffer, QuadData.Indices);
 
-            instance.CreateBuffer(MemUtil.SizeOf<Services.VulkanDeviceService.UniformBufferObject>() * 40, BufferUsageFlags.TransferDestination | BufferUsageFlags.UniformBuffer, MemoryPropertyFlags.DeviceLocal, out this.uniformBuffer, out this.uniformBufferMemory);
-            
+            instance.CreateBuffer(MemUtil.SizeOf<Services.VulkanDeviceService.UniformBufferObject>(), BufferUsageFlags.TransferDestination | BufferUsageFlags.UniformBuffer, MemoryPropertyFlags.DeviceLocal, out this.uniformBuffer, out this.uniformBufferMemory);
+
             this.descriptorSet = instance.Device.AllocateDescriptorSets(new DescriptorSetAllocateInfo
             {
                 DescriptorPool = descriptorPool,
@@ -303,7 +291,7 @@ namespace GBJam5.Vulkan
                     {
                         new DescriptorImageInfo
                         {
-                            ImageView = textureImageView,
+                            ImageView = offScreenImageView,
                             Sampler = textureSampler,
                             ImageLayout = ImageLayout.ShaderReadOnlyOptimal
                         }
@@ -317,31 +305,34 @@ namespace GBJam5.Vulkan
 
             this.CommandBuffers = instance.Device.AllocateCommandBuffers(new CommandBufferAllocateInfo
             {
-                CommandBufferCount = 1,
+                CommandBufferCount = (uint)this.swapchainFrameBuffers.Length,
                 CommandPool = commandPool,
                 Level = CommandBufferLevel.Primary
             });
 
-            var commandBuffer = this.CommandBuffers[0];
-
-            commandBuffer.Begin(new CommandBufferBeginInfo
+            for (int bufferIndex = 0; bufferIndex < this.swapchainFrameBuffers.Length; bufferIndex++)
             {
-                Flags = CommandBufferUsageFlags.SimultaneousUse
-            });
+                var commandBuffer = this.CommandBuffers[bufferIndex];
+                var frameBuffer = this.swapchainFrameBuffers[bufferIndex];
 
-            commandBuffer.BeginRenderPass(new RenderPassBeginInfo
-            {
-                RenderPass = renderPass,
-                Framebuffer = this.offScreenFrameBuffer,
-                RenderArea = new Rect2D
+                commandBuffer.Begin(new CommandBufferBeginInfo
                 {
-                    Offset = new Offset2D(),
-                    Extent = imageExtent
-                }
-            }, SubpassContents.Inline);
+                    Flags = CommandBufferUsageFlags.SimultaneousUse
+                });
 
-            commandBuffer.ClearAttachments(new[]
-            {
+                commandBuffer.BeginRenderPass(new RenderPassBeginInfo
+                {
+                    RenderPass = renderPass,
+                    Framebuffer = frameBuffer,
+                    RenderArea = new Rect2D
+                    {
+                        Offset = new Offset2D(),
+                        Extent = swapchainExtent
+                    }
+                }, SubpassContents.Inline);
+
+                commandBuffer.ClearAttachments(new[]
+                {
                     new ClearAttachment
                     {
                         AspectMask = ImageAspectFlags.Color,
@@ -349,32 +340,33 @@ namespace GBJam5.Vulkan
                         ColorAttachment = 0
                     }
                 },
-            new[]
-            {
+                new[]
+                {
                     new ClearRect
                     {
                         BaseArrayLayer = 0,
                         LayerCount = 1,
                         Rect = new Rect2D
                         {
-                            Extent = imageExtent
+                            Extent = swapchainExtent
                         }
                     }
-            });
+                });
 
-            commandBuffer.BindPipeline(PipelineBindPoint.Graphics, this.pipeline);
+                commandBuffer.BindPipeline(PipelineBindPoint.Graphics, this.pipeline);
 
-            commandBuffer.BindVertexBuffers(0, new[] { this.vertexBuffer }, new DeviceSize[] { 0 });
+                commandBuffer.BindVertexBuffers(0, new[] { this.vertexBuffer }, new DeviceSize[] { 0 });
 
-            commandBuffer.BindIndexBuffer(this.indexBuffer, 0, IndexType.UInt16);
+                commandBuffer.BindIndexBuffer(this.indexBuffer, 0, IndexType.UInt16);
 
-            commandBuffer.BindDescriptorSets(PipelineBindPoint.Graphics, pipelineLayout, 0, new[] { descriptorSet }, null);
+                commandBuffer.BindDescriptorSets(PipelineBindPoint.Graphics, pipelineLayout, 0, new[] { descriptorSet }, null);
 
-            commandBuffer.DrawIndexed((uint)QuadData.Indices.Length, 1, 0, 0, 0);
+                commandBuffer.DrawIndexed((uint)QuadData.Indices.Length, 1, 0, 0, 0);
 
-            commandBuffer.EndRenderPass();
+                commandBuffer.EndRenderPass();
 
-            commandBuffer.End();
+                commandBuffer.End();
+            }
         }
 
         public CommandBuffer[] CommandBuffers
@@ -384,7 +376,5 @@ namespace GBJam5.Vulkan
         }
 
         public Buffer UniformBuffer => this.uniformBuffer;
-
-        public ImageView ImageView => this.offScreenImageView;
     }
 }

@@ -16,7 +16,8 @@ namespace GBJam5.Services
         {
             get
             {
-                return this.keyboardDevice.OnKeyDown(Keys.Subtract);
+                return this.keyboardDevice.OnKeyDown(Keys.Subtract)
+                    || this.keyboardDevice.OnKeyDown(Keys.OemMinus);
             }
         }
 
@@ -24,7 +25,8 @@ namespace GBJam5.Services
         {
             get
             {
-                return this.keyboardDevice.OnKeyDown(Keys.Add);
+                return this.keyboardDevice.OnKeyDown(Keys.Add)
+                    || this.keyboardDevice.OnKeyDown(Keys.Oemplus);
             }
         }
     }
