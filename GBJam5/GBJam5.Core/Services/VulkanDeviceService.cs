@@ -1,4 +1,5 @@
-﻿using GlmSharp;
+﻿using GBJam5.Vulkan;
+using GlmSharp;
 using SharpVk;
 using System;
 using System.Collections.Generic;
@@ -13,7 +14,7 @@ using Size = SharpVk.Size;
 namespace GBJam5.Services
 {
     public class VulkanDeviceService
-        : GameService, IGraphicsDeviceService, IUpdatable
+        : GameService, IGraphicsDeviceService, IUpdatable, IVulkanInstance
     {
         // A managed reference is held to prevent the delegate from being
         // garbage-collected while still in use by the unmanaged API.
@@ -64,8 +65,6 @@ namespace GBJam5.Services
         private DeviceMemory vertexBufferMemory;
         private Buffer indexBuffer;
         private DeviceMemory indexBufferMemory;
-        private Buffer uniformStagingBuffer;
-        private DeviceMemory uniformStagingBufferMemory;
         private Buffer uniformBuffer;
         private DeviceMemory uniformBufferMemory;
         private Image stagingImage;
@@ -78,10 +77,10 @@ namespace GBJam5.Services
         private ImageView offScreenImageView;
         private Sampler textureSampler;
         private DescriptorPool descriptorPool;
-        private DescriptorSet offScreenDescriptorSet;
         private DescriptorSet descriptorSet;
-        private CommandBuffer offScreenCommandBuffer;
         private CommandBuffer[] commandBuffers;
+
+        private OffScreenRenderPipeline offScreenRenderPipeline;
 
         private Semaphore screenRenderSemaphore;
         private Semaphore imageAvailableSemaphore;
@@ -89,6 +88,10 @@ namespace GBJam5.Services
 
         private Format swapChainFormat;
         private Extent2D swapChainExtent;
+
+        private uint stagingBufferSize;
+        private Buffer stagingBuffer;
+        private DeviceMemory stagingBufferMemory;
 
         public VulkanDeviceService()
         {
@@ -100,6 +103,8 @@ namespace GBJam5.Services
             get;
             set;
         } = 4;
+
+        public Device Device => this.device;
 
         public override void Initialise(Game game)
         {
@@ -128,12 +133,11 @@ namespace GBJam5.Services
             this.CreateOffScreenImageView();
             this.CreateTextureSampler();
             this.CreateOffScreenFrameBuffer();
-            this.CreateVertexBuffers();
-            this.CreateIndexBuffer();
-            this.CreateUniformBuffer();
+            this.CreateBuffers();
             this.CreateDescriptorPool();
             this.CreateDescriptorSet();
             this.CreateCommandBuffers();
+            this.CreateOffScreenRenderPipeline();
             this.CreateSemaphores();
 
             this.updateLoop.Register(this, UpdateStage.Render);
@@ -148,27 +152,31 @@ namespace GBJam5.Services
 
             uint nextImage = this.swapChain.AcquireNextImage(uint.MaxValue, this.imageAvailableSemaphore, null);
 
-            this.UpdateUbo(new UniformBufferObject
-            {
-                World = mat4.Translate(32, 32, 0) * mat4.Scale(32, 32, 1),
-                View = mat4.Identity,
-                Projection = mat4.Translate(-1, -1, 0)
-                                * mat4.Scale(2)
-                                * mat4.Scale(1 / (float)gbTextureWidth, 1 / (float)gbTextureHeight, 1)
-            });
+            this.UpdateBuffer(this.offScreenRenderPipeline.UniformBuffer,
+                new[]
+                {
+                    new UniformBufferObject
+                    {
+                        World = mat4.Translate(32, 32, 0) * mat4.Scale(16, 16, 1),
+                        View = mat4.Identity,
+                        Projection = mat4.Translate(-1, -1, 0)
+                                        * mat4.Scale(2)
+                                        * mat4.Scale(1 / (float)gbTextureWidth, 1 / (float)gbTextureHeight, 1)
+                    }
+                });
 
             this.graphicsQueue.Submit(new SubmitInfo[]
             {
                 new SubmitInfo
                 {
-                    CommandBuffers = new [] { this.offScreenCommandBuffer },
+                    CommandBuffers = new [] { this.offScreenRenderPipeline.CommandBuffers[0] },
                     SignalSemaphores = new [] { this.screenRenderSemaphore },
                     WaitDestinationStageMask = new [] { PipelineStageFlags.ColorAttachmentOutput },
                     WaitSemaphores = new [] { this.imageAvailableSemaphore }
                 }
             }, null);
-            
-            this.UpdateUbo(new UniformBufferObject
+
+            this.UpdateBuffer(this.uniformBuffer, new UniformBufferObject
             {
                 World = mat4.Scale(160, 144, 1),
                 View = mat4.Identity,
@@ -199,18 +207,57 @@ namespace GBJam5.Services
             });
         }
 
-        private void UpdateUbo(UniformBufferObject ubo)
+        public void UpdateBuffer<T>(Buffer buffer, T data, int offset = 0)
+            where T : struct
         {
-            uint uboSize = MemUtil.SizeOf<UniformBufferObject>();
+            uint dataSize = MemUtil.SizeOf<T>();
+            uint dataOffset = (uint)(offset * dataSize);
+
+            this.CheckStagingBufferSize(dataSize, dataOffset);
 
             IntPtr memoryBuffer = IntPtr.Zero;
-            this.uniformStagingBufferMemory.MapMemory(0, uboSize, MemoryMapFlags.None, ref memoryBuffer);
+            this.stagingBufferMemory.MapMemory(dataOffset, dataSize, MemoryMapFlags.None, ref memoryBuffer);
 
-            MemUtil.WriteToPtr(memoryBuffer, ubo);
+            MemUtil.WriteToPtr(memoryBuffer, data);
 
-            this.uniformStagingBufferMemory.UnmapMemory();
+            this.stagingBufferMemory.UnmapMemory();
 
-            this.CopyBuffer(this.uniformStagingBuffer, this.uniformBuffer, uboSize);
+            this.CopyBuffer(this.stagingBuffer, buffer, dataOffset + dataSize);
+        }
+
+        public void UpdateBuffer<T>(Buffer buffer, T[] data, int offset = 0)
+            where T : struct
+        {
+            uint dataSize = (uint)(MemUtil.SizeOf<T>() * data.Length);
+            uint dataOffset = (uint)(offset * dataSize);
+
+            this.CheckStagingBufferSize(dataSize, dataOffset);
+
+            IntPtr memoryBuffer = IntPtr.Zero;
+            this.stagingBufferMemory.MapMemory(dataOffset, dataSize, MemoryMapFlags.None, ref memoryBuffer);
+
+            MemUtil.WriteToPtr(memoryBuffer, data, 0, data.Length);
+
+            this.stagingBufferMemory.UnmapMemory();
+
+            this.CopyBuffer(this.stagingBuffer, buffer, dataOffset + dataSize);
+        }
+
+        public void CheckStagingBufferSize(uint dataSize, uint dataOffset)
+        {
+            uint memRequirement = dataOffset + dataSize;
+
+            if (memRequirement > this.stagingBufferSize)
+            {
+                if (stagingBuffer != null)
+                {
+                    this.stagingBuffer.Destroy();
+                    this.device.FreeMemory(this.stagingBufferMemory);
+                }
+
+                this.CreateBuffer(memRequirement, BufferUsageFlags.TransferSource, MemoryPropertyFlags.HostVisible | MemoryPropertyFlags.HostCoherent, out this.stagingBuffer, out this.stagingBufferMemory);
+                this.stagingBufferSize = memRequirement;
+            }
         }
 
         public override void Stop()
@@ -878,58 +925,17 @@ namespace GBJam5.Services
             });
         }
 
-        private void CreateVertexBuffers()
+        private void CreateBuffers()
         {
-            uint bufferSize = MemUtil.SizeOf<Vertex>() * (uint)quadVertices.Length;
-            Buffer stagingBuffer;
-            DeviceMemory stagingBufferMemory;
+            this.CreateBuffer(MemUtil.SizeOf<Vertex>() * (uint)quadVertices.Length, BufferUsageFlags.TransferDestination | BufferUsageFlags.VertexBuffer, MemoryPropertyFlags.DeviceLocal, out this.vertexBuffer, out this.vertexBufferMemory);
 
-            this.CreateBuffer(bufferSize, BufferUsageFlags.TransferSource, MemoryPropertyFlags.HostVisible | MemoryPropertyFlags.HostCoherent, out stagingBuffer, out stagingBufferMemory);
+            this.UpdateBuffer(this.vertexBuffer, this.quadVertices);
 
-            IntPtr memoryBuffer = IntPtr.Zero;
-            stagingBufferMemory.MapMemory(0, bufferSize, MemoryMapFlags.None, ref memoryBuffer);
+            this.CreateBuffer(MemUtil.SizeOf<ushort>() * (uint)this.quadIndices.Length, BufferUsageFlags.TransferDestination | BufferUsageFlags.IndexBuffer, MemoryPropertyFlags.DeviceLocal, out this.indexBuffer, out this.indexBufferMemory);
 
-            MemUtil.WriteToPtr(memoryBuffer, quadVertices, 0, quadVertices.Length);
-
-            stagingBufferMemory.UnmapMemory();
-
-            this.CreateBuffer(bufferSize, BufferUsageFlags.TransferDestination | BufferUsageFlags.VertexBuffer, MemoryPropertyFlags.DeviceLocal, out this.vertexBuffer, out this.vertexBufferMemory);
-
-            this.CopyBuffer(stagingBuffer, this.vertexBuffer, bufferSize);
-
-            stagingBuffer.Dispose();
-            this.device.FreeMemory(stagingBufferMemory);
-        }
-
-        private void CreateIndexBuffer()
-        {
-            ulong bufferSize = MemUtil.SizeOf<ushort>() * (uint)this.quadIndices.Length;
-            Buffer stagingBuffer;
-            DeviceMemory stagingBufferMemory;
-
-            this.CreateBuffer(bufferSize, BufferUsageFlags.TransferSource, MemoryPropertyFlags.HostVisible | MemoryPropertyFlags.HostCoherent, out stagingBuffer, out stagingBufferMemory);
-
-            IntPtr memoryBuffer = IntPtr.Zero;
-            stagingBufferMemory.MapMemory(0, bufferSize, MemoryMapFlags.None, ref memoryBuffer);
-
-            MemUtil.WriteToPtr(memoryBuffer, quadIndices, 0, quadIndices.Length);
-
-            stagingBufferMemory.UnmapMemory();
-
-            this.CreateBuffer(bufferSize, BufferUsageFlags.TransferDestination | BufferUsageFlags.IndexBuffer, MemoryPropertyFlags.DeviceLocal, out this.indexBuffer, out this.indexBufferMemory);
-
-            this.CopyBuffer(stagingBuffer, this.indexBuffer, bufferSize);
-
-            stagingBuffer.Dispose();
-            this.device.FreeMemory(stagingBufferMemory);
-        }
-
-        private void CreateUniformBuffer()
-        {
-            uint bufferSize = MemUtil.SizeOf<UniformBufferObject>();
-
-            this.CreateBuffer(bufferSize, BufferUsageFlags.TransferSource, MemoryPropertyFlags.HostVisible | MemoryPropertyFlags.HostCoherent, out this.uniformStagingBuffer, out this.uniformStagingBufferMemory);
-            this.CreateBuffer(bufferSize, BufferUsageFlags.TransferDestination | BufferUsageFlags.UniformBuffer, MemoryPropertyFlags.DeviceLocal, out this.uniformBuffer, out this.uniformBufferMemory);
+            this.UpdateBuffer(this.indexBuffer, this.quadIndices);
+            
+            this.CreateBuffer(MemUtil.SizeOf<UniformBufferObject>(), BufferUsageFlags.TransferDestination | BufferUsageFlags.UniformBuffer, MemoryPropertyFlags.DeviceLocal, out this.uniformBuffer, out this.uniformBufferMemory);
         }
 
         private void CreateDescriptorPool()
@@ -955,18 +961,14 @@ namespace GBJam5.Services
 
         private void CreateDescriptorSet()
         {
-            var descriptorSets = this.device.AllocateDescriptorSets(new DescriptorSetAllocateInfo
+            this.descriptorSet = this.device.AllocateDescriptorSets(new DescriptorSetAllocateInfo
             {
                 DescriptorPool = this.descriptorPool,
                 SetLayouts = new[]
                 {
-                    this.descriptorSetLayout,
                     this.descriptorSetLayout
                 }
-            });
-
-            this.descriptorSet = descriptorSets[0];
-            this.offScreenDescriptorSet = descriptorSets[1];
+            }).Single();
 
             this.device.UpdateDescriptorSets(new[]
             {
@@ -1003,119 +1005,10 @@ namespace GBJam5.Services
                     DescriptorType = DescriptorType.CombinedImageSampler
                 }
             }, null);
-
-            this.device.UpdateDescriptorSets(new[]
-            {
-                new WriteDescriptorSet
-                {
-                    BufferInfo = new []
-                    {
-                        new DescriptorBufferInfo
-                        {
-                            Buffer = this.uniformBuffer,
-                            Offset = 0,
-                            Range = MemUtil.SizeOf<UniformBufferObject>()
-                        }
-                    },
-                    DestinationSet = this.offScreenDescriptorSet,
-                    DestinationBinding = 0,
-                    DestinationArrayElement = 0,
-                    DescriptorType = DescriptorType.UniformBuffer
-                },
-                new WriteDescriptorSet
-                {
-                    ImageInfo = new []
-                    {
-                        new DescriptorImageInfo
-                        {
-                            ImageView = this.textureImageView,
-                            Sampler = this.textureSampler,
-                            ImageLayout = ImageLayout.ShaderReadOnlyOptimal
-                        }
-                    },
-                    DestinationSet = this.offScreenDescriptorSet,
-                    DestinationBinding = 1,
-                    DestinationArrayElement = 0,
-                    DescriptorType = DescriptorType.CombinedImageSampler
-                }
-            }, null);
         }
 
         private void CreateCommandBuffers()
         {
-            this.commandPool.Reset(CommandPoolResetFlags.ReleaseResources);
-
-            this.offScreenCommandBuffer = device.AllocateCommandBuffers(new CommandBufferAllocateInfo
-            {
-                CommandBufferCount = 1,
-                CommandPool = this.commandPool,
-                Level = CommandBufferLevel.Primary
-            }).Single();
-
-            offScreenCommandBuffer.Begin(new CommandBufferBeginInfo
-            {
-                Flags = CommandBufferUsageFlags.SimultaneousUse
-            });
-
-            offScreenCommandBuffer.BeginRenderPass(new RenderPassBeginInfo
-            {
-                RenderPass = this.offScreenRenderPass,
-                Framebuffer = this.offScreenFrameBuffer,
-                RenderArea = new Rect2D
-                {
-                    Offset = new Offset2D(),
-                    Extent = new Extent2D
-                    {
-                        Width = gbTextureWidth,
-                        Height = gbTextureHeight
-                    }
-                },
-                ClearValues = new ClearValue[]
-                {
-                        new ClearColorValue(0f, 0f, 0f, 1f)
-                }
-            }, SubpassContents.Inline);
-
-            offScreenCommandBuffer.ClearAttachments(new[]
-            {
-                    new ClearAttachment
-                    {
-                        AspectMask = ImageAspectFlags.Color,
-                        ClearValue = new ClearColorValue(0f, 0f, 1f, 1f),
-                        ColorAttachment = 0
-                    }
-                },
-            new[]
-            {
-                    new ClearRect
-                    {
-                        BaseArrayLayer = 0,
-                        LayerCount = 1,
-                        Rect = new Rect2D
-                        {
-                            Extent = new Extent2D
-                            {
-                                Width = gbTextureWidth,
-                                Height = gbTextureHeight
-                            }
-                        }
-                    }
-            });
-
-            offScreenCommandBuffer.BindPipeline(PipelineBindPoint.Graphics, this.offScreenPipeline);
-
-            offScreenCommandBuffer.BindVertexBuffers(0, new[] { this.vertexBuffer }, new DeviceSize[] { 0 });
-
-            offScreenCommandBuffer.BindIndexBuffer(this.indexBuffer, 0, IndexType.UInt16);
-
-            offScreenCommandBuffer.BindDescriptorSets(PipelineBindPoint.Graphics, this.pipelineLayout, 0, new[] { this.offScreenDescriptorSet }, null);
-
-            offScreenCommandBuffer.DrawIndexed((uint)this.quadIndices.Length, 1, 0, 0, 0);
-
-            offScreenCommandBuffer.EndRenderPass();
-
-            offScreenCommandBuffer.End();
-
             this.commandBuffers = device.AllocateCommandBuffers(new CommandBufferAllocateInfo
             {
                 CommandBufferCount = (uint)this.frameBuffers.Length,
@@ -1183,6 +1076,21 @@ namespace GBJam5.Services
 
                 commandBuffer.End();
             }
+        }
+
+        private void CreateOffScreenRenderPipeline()
+        {
+            this.offScreenRenderPipeline = new Vulkan.OffScreenRenderPipeline(this,
+                                                                                this.commandPool,
+                                                                                new[] { this.offScreenFrameBuffer },
+                                                                                new Extent2D { Width = gbTextureWidth, Height = gbTextureHeight },
+                                                                                new ClearColorValue(0f, 0f, 0f, 1f),
+                                                                                this.offScreenPipeline,
+                                                                                this.pipelineLayout,
+                                                                                this.offScreenRenderPass,
+                                                                                this.descriptorPool,
+                                                                                this.textureImageView,
+                                                                                this.textureSampler);
         }
 
         private void CreateSemaphores()
@@ -1320,7 +1228,7 @@ namespace GBJam5.Services
             return shaderData;
         }
 
-        private void CreateBuffer(ulong size, BufferUsageFlags usage, MemoryPropertyFlags properties, out Buffer buffer, out DeviceMemory bufferMemory)
+        public void CreateBuffer(ulong size, BufferUsageFlags usage, MemoryPropertyFlags properties, out Buffer buffer, out DeviceMemory bufferMemory)
         {
             buffer = device.CreateBuffer(new BufferCreateInfo
             {
@@ -1562,49 +1470,5 @@ namespace GBJam5.Services
             public mat4 View;
             public mat4 Projection;
         };
-
-        private struct Vertex
-        {
-            public Vertex(vec2 position, vec2 uv)
-            {
-                this.Position = position;
-                this.Uv = uv;
-            }
-
-            public vec2 Position;
-
-            public vec2 Uv;
-
-            public static VertexInputBindingDescription GetBindingDescription()
-            {
-                return new VertexInputBindingDescription()
-                {
-                    Binding = 0,
-                    Stride = (uint)Marshal.SizeOf<Vertex>(),
-                    InputRate = VertexInputRate.Vertex
-                };
-            }
-
-            public static VertexInputAttributeDescription[] GetAttributeDescriptions()
-            {
-                return new VertexInputAttributeDescription[]
-                {
-                    new VertexInputAttributeDescription
-                    {
-                        Binding = 0,
-                        Location = 0,
-                        Format = Format.R32G32SFloat,
-                        Offset = (uint)Marshal.OffsetOf<Vertex>("Position")
-                    },
-                    new VertexInputAttributeDescription
-                    {
-                        Binding = 0,
-                        Location = 1,
-                        Format = Format.R32G32SFloat,
-                        Offset = (uint)Marshal.OffsetOf<Vertex>("Uv")
-                    }
-                };
-            }
-        }
     }
 }

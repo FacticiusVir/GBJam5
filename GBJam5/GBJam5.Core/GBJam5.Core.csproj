@@ -68,6 +68,10 @@
     <Compile Include="Services\VulkanDeviceService.cs" />
     <Compile Include="Services\Win32KeyboardDeviceService.cs" />
     <Compile Include="Services\WindowHostService.cs" />
+    <Compile Include="Vulkan\IVulkanInstance.cs" />
+    <Compile Include="Vulkan\OffScreenRenderPipeline.cs" />
+    <Compile Include="Vulkan\QuadData.cs" />
+    <Compile Include="Vulkan\Vertex.cs" />
     <Compile Include="WindowsMessages.cs" />
   </ItemGroup>
   <ItemGroup>
