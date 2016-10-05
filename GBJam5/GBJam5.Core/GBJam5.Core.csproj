@@ -48,6 +48,8 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Audio\IAudio.cs" />
+    <Compile Include="Audio\ISoundEffect.cs" />
     <Compile Include="Components\PixelScaleManager.cs" />
     <Compile Include="IUpdatable.cs" />
     <Compile Include="Components\SpriteRenderer.cs" />
@@ -59,6 +61,7 @@
     <Compile Include="ServiceProviderExtensions.cs" />
     <Compile Include="Services\DebugLoggingService.cs" />
     <Compile Include="Services\GameService.cs" />
+    <Compile Include="Services\IAudioService.cs" />
     <Compile Include="Services\IGameService.cs" />
     <Compile Include="Services\IGraphicsDeviceService.cs" />
     <Compile Include="Services\IKeyboardDeviceService.cs" />
