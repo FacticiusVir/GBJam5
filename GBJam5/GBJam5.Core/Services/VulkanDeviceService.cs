@@ -126,7 +126,7 @@ namespace GBJam5.Services
                 {
                     new UniformBufferObject
                     {
-                        World = mat4.Translate(32, 32, 0) * mat4.Scale(16, 16, 1),
+                        World = mat4.Scale(16, 16, 1),
                         View = mat4.Identity,
                         Projection = mat4.Translate(-1, -1, 0)
                                         * mat4.Scale(2)
@@ -247,12 +247,12 @@ namespace GBJam5.Services
         {
             this.device.WaitIdle();
             
-            this.swapChain.Dispose();
-            this.swapChain = null;
+            //this.swapChain.Dispose();
+            //this.swapChain = null;
 
-            this.CreateSwapChain();
+            //this.CreateSwapChain();
 
-            this.CreateSwapchainRenderPipeline();
+            //this.CreateSwapchainRenderPipeline();
         }
 
         private void CreateInstance()

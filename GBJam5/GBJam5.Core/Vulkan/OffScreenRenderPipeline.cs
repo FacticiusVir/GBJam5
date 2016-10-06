@@ -1,4 +1,5 @@
-﻿using SharpVk;
+﻿using GlmSharp;
+using SharpVk;
 using System.Linq;
 
 namespace GBJam5.Vulkan
@@ -20,6 +21,8 @@ namespace GBJam5.Vulkan
         private Framebuffer offScreenFrameBuffer;
         private Buffer vertexBuffer;
         private DeviceMemory vertexBufferMemory;
+        private Buffer instanceBuffer;
+        private DeviceMemory instanceBufferMemory;
         private Buffer indexBuffer;
         private DeviceMemory indexBufferMemory;
         private Buffer uniformBuffer;
@@ -119,7 +122,7 @@ namespace GBJam5.Vulkan
             });
 
             int codeSize;
-            var vertShaderData = instance.LoadShaderData(@".\Shaders\vert.spv", out codeSize);
+            var vertShaderData = instance.LoadShaderData(@".\Shaders\offScreenVert.spv", out codeSize);
 
             this.vertexShader = instance.Device.CreateShaderModule(new ShaderModuleCreateInfo
             {
@@ -155,8 +158,24 @@ namespace GBJam5.Vulkan
                     Subpass = 0,
                     VertexInputState = new PipelineVertexInputStateCreateInfo()
                     {
-                        VertexBindingDescriptions = new [] { bindingDescription },
+                        VertexBindingDescriptions = new [] { bindingDescription,
+                                                                new VertexInputBindingDescription
+                                                                {
+                                                                    Binding = 1,
+                                                                    InputRate = VertexInputRate.Instance,
+                                                                    Stride = MemUtil.SizeOf<vec2>()
+                                                                } },
                         VertexAttributeDescriptions = attributeDescriptions
+                                                        .Concat(new[]
+                                                        {
+                                                            new VertexInputAttributeDescription
+                                                            {
+                                                                Binding = 1,
+                                                                Location = 2,
+                                                                Format = Format.R32G32SFloat,
+                                                                Offset = 0
+                                                            }
+                                                        }).ToArray()
                     },
                     InputAssemblyState = new PipelineInputAssemblyStateCreateInfo
                     {
@@ -268,8 +287,12 @@ namespace GBJam5.Vulkan
 
             instance.UpdateBuffer(this.indexBuffer, QuadData.Indices);
 
-            instance.CreateBuffer(MemUtil.SizeOf<Services.VulkanDeviceService.UniformBufferObject>() * 40, BufferUsageFlags.TransferDestination | BufferUsageFlags.UniformBuffer, MemoryPropertyFlags.DeviceLocal, out this.uniformBuffer, out this.uniformBufferMemory);
-            
+            instance.CreateBuffer(MemUtil.SizeOf<vec2>() * 40, BufferUsageFlags.TransferDestination | BufferUsageFlags.VertexBuffer, MemoryPropertyFlags.DeviceLocal, out this.instanceBuffer, out this.instanceBufferMemory);
+
+            instance.UpdateBuffer(this.instanceBuffer, new[] { vec2.Zero, new vec2(144, 128) });
+
+            instance.CreateBuffer(MemUtil.SizeOf<Services.VulkanDeviceService.UniformBufferObject>(), BufferUsageFlags.TransferDestination | BufferUsageFlags.UniformBuffer, MemoryPropertyFlags.DeviceLocal, out this.uniformBuffer, out this.uniformBufferMemory);
+
             this.descriptorSet = instance.Device.AllocateDescriptorSets(new DescriptorSetAllocateInfo
             {
                 DescriptorPool = descriptorPool,
@@ -331,7 +354,7 @@ namespace GBJam5.Vulkan
 
             commandBuffer.BeginRenderPass(new RenderPassBeginInfo
             {
-                RenderPass = renderPass,
+                RenderPass = this.renderPass,
                 Framebuffer = this.offScreenFrameBuffer,
                 RenderArea = new Rect2D
                 {
@@ -364,13 +387,13 @@ namespace GBJam5.Vulkan
 
             commandBuffer.BindPipeline(PipelineBindPoint.Graphics, this.pipeline);
 
-            commandBuffer.BindVertexBuffers(0, new[] { this.vertexBuffer }, new DeviceSize[] { 0 });
+            commandBuffer.BindVertexBuffers(0, new[] { this.vertexBuffer, this.instanceBuffer }, new DeviceSize[] { 0, 0 });
 
             commandBuffer.BindIndexBuffer(this.indexBuffer, 0, IndexType.UInt16);
 
             commandBuffer.BindDescriptorSets(PipelineBindPoint.Graphics, pipelineLayout, 0, new[] { descriptorSet }, null);
 
-            commandBuffer.DrawIndexed((uint)QuadData.Indices.Length, 1, 0, 0, 0);
+            commandBuffer.DrawIndexed((uint)QuadData.Indices.Length, 2, 0, 0, 0);
 
             commandBuffer.EndRenderPass();
 
