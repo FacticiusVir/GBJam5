@@ -23,11 +23,18 @@ namespace GBJam5.Vulkan
         private DeviceMemory vertexBufferMemory;
         private Buffer instanceBuffer;
         private DeviceMemory instanceBufferMemory;
+        private Buffer drawCommandBuffer;
+        private DeviceMemory drawCommandBufferMemory;
         private Buffer indexBuffer;
         private DeviceMemory indexBufferMemory;
         private Buffer uniformBuffer;
         private DeviceMemory uniformBufferMemory;
         private DescriptorSet descriptorSet;
+        private readonly vec2[] instanceData;
+        private uint instanceCount;
+        private int[] instanceReferences;
+        private int firstFreeReference;
+        private IVulkanInstance instance;
 
         public OffScreenRenderPipeline(IVulkanInstance instance,
                                         CommandPool commandPool,
@@ -41,6 +48,8 @@ namespace GBJam5.Vulkan
                 Width = gbTextureWidth,
                 Height = gbTextureHeight
             };
+
+            this.instance = instance;
 
             this.renderPass = instance.Device.CreateRenderPass(new RenderPassCreateInfo
             {
@@ -289,9 +298,14 @@ namespace GBJam5.Vulkan
 
             instance.CreateBuffer(MemUtil.SizeOf<vec2>() * 40, BufferUsageFlags.TransferDestination | BufferUsageFlags.VertexBuffer, MemoryPropertyFlags.DeviceLocal, out this.instanceBuffer, out this.instanceBufferMemory);
 
-            instance.UpdateBuffer(this.instanceBuffer, new[] { vec2.Zero, new vec2(144, 128) });
-
             instance.CreateBuffer(MemUtil.SizeOf<Services.VulkanDeviceService.UniformBufferObject>(), BufferUsageFlags.TransferDestination | BufferUsageFlags.UniformBuffer, MemoryPropertyFlags.DeviceLocal, out this.uniformBuffer, out this.uniformBufferMemory);
+
+            instance.CreateBuffer(MemUtil.SizeOf<DrawIndexedIndirectCommand>(), BufferUsageFlags.TransferDestination | BufferUsageFlags.IndirectBuffer, MemoryPropertyFlags.DeviceLocal, out this.drawCommandBuffer, out this.drawCommandBufferMemory);
+
+            this.instanceData = new vec2[40];
+            this.instanceReferences = Enumerable.Range(1, this.instanceData.Length).ToArray();
+            
+            this.UpdateInstanceBuffers();
 
             this.descriptorSet = instance.Device.AllocateDescriptorSets(new DescriptorSetAllocateInfo
             {
@@ -393,11 +407,40 @@ namespace GBJam5.Vulkan
 
             commandBuffer.BindDescriptorSets(PipelineBindPoint.Graphics, pipelineLayout, 0, new[] { descriptorSet }, null);
 
-            commandBuffer.DrawIndexed((uint)QuadData.Indices.Length, 2, 0, 0, 0);
+            commandBuffer.DrawIndexedIndirect(this.drawCommandBuffer, 0, 1, 0);
 
             commandBuffer.EndRenderPass();
 
             commandBuffer.End();
+        }
+
+        private int AddInstance(vec2 position)
+        {
+            int reference = this.firstFreeReference;
+
+            if (reference >= this.instanceData.Length)
+            {
+                throw new System.Exception();
+            }
+
+            this.firstFreeReference = this.instanceReferences[reference];
+
+            int dataIndex = (int)this.instanceCount;
+            this.instanceCount++;
+
+            this.instanceReferences[reference] = dataIndex;
+            this.instanceData[dataIndex] = position;
+
+            this.UpdateInstanceBuffers();
+
+            return reference;
+        }
+
+        private void UpdateInstanceBuffers()
+        {
+            this.instance.UpdateBuffer(this.instanceBuffer, this.instanceData);
+
+            this.instance.UpdateBuffer(this.drawCommandBuffer, new DrawIndexedIndirectCommand { FirstIndex = 0, FirstInstance = 0, IndexCount = (uint)QuadData.Indices.Length, InstanceCount = this.instanceCount, VertexOffset = 0 });
         }
 
         public CommandBuffer[] CommandBuffers
