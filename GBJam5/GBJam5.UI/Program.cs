@@ -38,6 +38,7 @@ namespace GBJam5
             game.BindService<ILoggingService, DebugLoggingService>();
             game.BindService<IUpdateLoopService>(updateLoop);
             game.BindService<IWindowHostService>(windowHost);
+            game.BindService<IEntityService, EntityService>();
             game.BindService<IKeyboardDeviceService, Win32KeyboardDeviceService>();
             game.BindService<IInputEventService, InputEventService>();
             game.BindService<IGraphicsDeviceService, VulkanDeviceService>();
@@ -48,11 +49,9 @@ namespace GBJam5
 
             hostForm.Show();
 
-            var manager = game.CreateEntity();
+            var manager = game.Services.GetService<IEntityService>().CreateEntity();
 
             manager.AddComponent<PixelScaleManager>();
-
-            manager.Initialise();
 
             while (game.RunState == GameRunState.Running)
             {

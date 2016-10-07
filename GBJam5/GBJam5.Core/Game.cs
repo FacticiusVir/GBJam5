@@ -70,12 +70,7 @@ namespace GBJam5
 
             this.RunState = GameRunState.Stopped;
         }
-
-        public Entity CreateEntity()
-        {
-            return new Entity(this);
-        }
-
+        
         private void CheckRunState(GameRunState requiredState)
         {
             if (this.RunState != requiredState)

@@ -1,4 +1,5 @@
-﻿using System;
+﻿using GBJam5.Services;
+using System;
 using System.Collections.Generic;
 
 namespace GBJam5
@@ -6,16 +7,11 @@ namespace GBJam5
     public class Entity
     {
         private Dictionary<Type, EntityComponent> components = new Dictionary<Type, EntityComponent>();
+        private IEntityService manager;
 
-        public Entity(Game game)
+        public Entity(IEntityService manager)
         {
-            this.Game = game;
-        }
-
-        public Game Game
-        {
-            get;
-            private set;
+            this.manager = manager;
         }
 
         public void AddComponent<T>()
@@ -26,14 +22,8 @@ namespace GBJam5
             component.Entity = this;
 
             this.components.Add(typeof(T), component);
-        }
 
-        public void Initialise()
-        {
-            foreach(var component in this.components.Values)
-            {
-                component.Initialise();
-            }
+            this.manager.RegisterComponent(component);
         }
 
         public T GetComponent<T>()

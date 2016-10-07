@@ -1,4 +1,6 @@
-﻿namespace GBJam5
+﻿using System;
+
+namespace GBJam5
 {
     public class EntityComponent
     {
@@ -8,7 +10,7 @@
             internal set;
         }
 
-        public virtual void Initialise()
+        public virtual void Initialise(IServiceProvider provider)
         {
         }
     }

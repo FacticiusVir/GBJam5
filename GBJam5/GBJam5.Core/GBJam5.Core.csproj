@@ -60,8 +60,10 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="ServiceProviderExtensions.cs" />
     <Compile Include="Services\DebugLoggingService.cs" />
+    <Compile Include="Services\EntityService.cs" />
     <Compile Include="Services\GameService.cs" />
     <Compile Include="Services\IAudioService.cs" />
+    <Compile Include="Services\IEntityService.cs" />
     <Compile Include="Services\IGameService.cs" />
     <Compile Include="Services\IGraphicsDeviceService.cs" />
     <Compile Include="Services\IKeyboardDeviceService.cs" />

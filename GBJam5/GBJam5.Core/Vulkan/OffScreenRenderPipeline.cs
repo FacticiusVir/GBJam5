@@ -224,8 +224,8 @@ namespace GBJam5.Vulkan
                         RasterizerDiscardEnable = false,
                         PolygonMode = PolygonMode.Fill,
                         LineWidth = 1,
-                        CullMode = CullModeFlags.None,
-                        FrontFace = FrontFace.CounterClockwise,
+                        CullMode = CullModeFlags.Back,
+                        FrontFace = FrontFace.Clockwise,
                         DepthBiasEnable = false
                     },
                     MultisampleState = new PipelineMultisampleStateCreateInfo
@@ -300,7 +300,7 @@ namespace GBJam5.Vulkan
 
             instance.CreateBuffer(MemUtil.SizeOf<Services.VulkanDeviceService.UniformBufferObject>(), BufferUsageFlags.TransferDestination | BufferUsageFlags.UniformBuffer, MemoryPropertyFlags.DeviceLocal, out this.uniformBuffer, out this.uniformBufferMemory);
 
-            instance.CreateBuffer(MemUtil.SizeOf<DrawIndexedIndirectCommand>(), BufferUsageFlags.TransferDestination | BufferUsageFlags.IndirectBuffer, MemoryPropertyFlags.DeviceLocal, out this.drawCommandBuffer, out this.drawCommandBufferMemory);
+            instance.CreateBuffer(MemUtil.SizeOf<DrawIndirectCommand>(), BufferUsageFlags.TransferDestination | BufferUsageFlags.IndirectBuffer, MemoryPropertyFlags.DeviceLocal, out this.drawCommandBuffer, out this.drawCommandBufferMemory);
 
             this.instanceData = new vec2[40];
             this.instanceReferences = Enumerable.Range(1, this.instanceData.Length).ToArray();
@@ -403,18 +403,20 @@ namespace GBJam5.Vulkan
 
             commandBuffer.BindVertexBuffers(0, new[] { this.vertexBuffer, this.instanceBuffer }, new DeviceSize[] { 0, 0 });
 
-            commandBuffer.BindIndexBuffer(this.indexBuffer, 0, IndexType.UInt16);
+            //commandBuffer.BindIndexBuffer(this.indexBuffer, 0, IndexType.UInt16);
 
             commandBuffer.BindDescriptorSets(PipelineBindPoint.Graphics, pipelineLayout, 0, new[] { descriptorSet }, null);
 
-            commandBuffer.DrawIndexedIndirect(this.drawCommandBuffer, 0, 1, 0);
+            commandBuffer.DrawIndirect(this.drawCommandBuffer, 0, 1, 0);
+
+            //commandBuffer.DrawIndexed((uint)QuadData.Indices.Length, this.instanceCount, 0, 0, 0);
 
             commandBuffer.EndRenderPass();
 
             commandBuffer.End();
         }
 
-        private int AddInstance(vec2 position)
+        internal int AddInstance(vec2 position)
         {
             int reference = this.firstFreeReference;
 
@@ -436,11 +438,19 @@ namespace GBJam5.Vulkan
             return reference;
         }
 
+        internal void UpdateInstance(int reference, vec2 position)
+        {
+            int dataIndex = this.instanceReferences[reference];
+            this.instanceData[dataIndex] = position;
+
+            this.UpdateInstanceBuffers();
+        }
+
         private void UpdateInstanceBuffers()
         {
             this.instance.UpdateBuffer(this.instanceBuffer, this.instanceData);
 
-            this.instance.UpdateBuffer(this.drawCommandBuffer, new DrawIndexedIndirectCommand { FirstIndex = 0, FirstInstance = 0, IndexCount = (uint)QuadData.Indices.Length, InstanceCount = this.instanceCount, VertexOffset = 0 });
+            this.instance.UpdateBuffer(this.drawCommandBuffer, new DrawIndirectCommand { FirstInstance = 0, VertexCount = (uint)QuadData.Vertices.Length, InstanceCount = this.instanceCount, FirstVertex = 0 });
         }
 
         public CommandBuffer[] CommandBuffers

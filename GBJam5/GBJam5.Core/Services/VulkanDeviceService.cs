@@ -826,6 +826,16 @@ namespace GBJam5.Services
             });
         }
 
+        public int RegisterSprite(vec2 position)
+        {
+            return this.offScreenRenderPipeline.AddInstance(position);
+        }
+
+        public void UpdateSprite(int index, vec2 position)
+        {
+            this.offScreenRenderPipeline.UpdateInstance(index, position);
+        }
+
         private struct QueueFamilyIndices
         {
             public uint? GraphicsFamily;

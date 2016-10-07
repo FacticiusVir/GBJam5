@@ -1,4 +1,5 @@
 ﻿using GBJam5.Services;
+using System;
 
 namespace GBJam5.Components
 {
@@ -8,11 +9,11 @@ namespace GBJam5.Components
         private IInputEventService inputEvents;
         private IGraphicsDeviceService graphicsDevice;
 
-        public override void Initialise()
+        public override void Initialise(IServiceProvider provider)
         {
-            this.inputEvents = this.Entity.Game.Services.GetService<IInputEventService>();
-            this.graphicsDevice = this.Entity.Game.Services.GetService<IGraphicsDeviceService>();
-            this.Entity.Game.Services.GetService<IUpdateLoopService>().Register(this, UpdateStage.Update);
+            this.inputEvents = provider.GetService<IInputEventService>();
+            this.graphicsDevice = provider.GetService<IGraphicsDeviceService>();
+            provider.GetService<IUpdateLoopService>().Register(this, UpdateStage.Update);
         }
 
         public void Update()
