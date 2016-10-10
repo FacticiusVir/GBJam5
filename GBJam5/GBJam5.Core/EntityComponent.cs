@@ -13,5 +13,13 @@ namespace GBJam5
         public virtual void Initialise(IServiceProvider provider)
         {
         }
+
+        public virtual void Start()
+        {
+        }
+
+        public virtual void Stop()
+        {
+        }
     }
 }

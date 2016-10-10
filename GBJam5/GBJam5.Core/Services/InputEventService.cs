@@ -1,4 +1,5 @@
-﻿using System.Windows.Forms;
+﻿using System;
+using System.Windows.Forms;
 
 namespace GBJam5.Services
 {
@@ -29,6 +30,38 @@ namespace GBJam5.Services
                     || this.keyboardDevice.OnKeyDown(Keys.Oemplus);
             }
         }
+
+        public bool IsMoveUp
+        {
+            get
+            {
+                return this.keyboardDevice.IsKeyDown(Keys.W);
+            }
+        }
+
+        public bool IsMoveDown
+        {
+            get
+            {
+                return this.keyboardDevice.IsKeyDown(Keys.S);
+            }
+        }
+
+        public bool IsMoveRight
+        {
+            get
+            {
+                return this.keyboardDevice.IsKeyDown(Keys.D);
+            }
+        }
+
+        public bool IsMoveLeft
+        {
+            get
+            {
+                return this.keyboardDevice.IsKeyDown(Keys.A);
+            }
+        }
     }
 
     public interface IInputEventService
@@ -37,5 +70,13 @@ namespace GBJam5.Services
         bool OnPixelScaleUp { get; }
 
         bool OnPixelScaleDown { get; }
+
+        bool IsMoveUp { get; }
+
+        bool IsMoveDown { get; }
+
+        bool IsMoveRight { get; }
+
+        bool IsMoveLeft { get; }
     }
 }

@@ -431,7 +431,7 @@ namespace GBJam5.Vulkan
             this.instanceCount++;
 
             this.instanceReferences[reference] = dataIndex;
-            this.instanceData[dataIndex] = position;
+            this.instanceData[dataIndex] = vec2.Truncate(position);
 
             this.UpdateInstanceBuffers();
 
@@ -441,7 +441,7 @@ namespace GBJam5.Vulkan
         internal void UpdateInstance(int reference, vec2 position)
         {
             int dataIndex = this.instanceReferences[reference];
-            this.instanceData[dataIndex] = position;
+            this.instanceData[dataIndex] = vec2.Truncate(position);
 
             this.UpdateInstanceBuffers();
         }

@@ -12,8 +12,8 @@ namespace GBJam5
         {
             var game = new Game();
 
-            const int windowWidth = 800;
-            const int windowHeight = 600;
+            const int windowWidth = 1024;
+            const int windowHeight = 768;
 
             var hostForm = new Form()
             {
@@ -49,9 +49,17 @@ namespace GBJam5
 
             hostForm.Show();
 
-            var manager = game.Services.GetService<IEntityService>().CreateEntity();
+            var entityManager = game.Services.GetService<IEntityService>();
+
+            var manager = entityManager.CreateEntity();
 
             manager.AddComponent<PixelScaleManager>();
+
+            var sprite = entityManager.CreateEntity();
+
+            sprite.AddComponent<SpriteRenderer>();
+            sprite.AddComponent<Transform2>();
+            sprite.AddComponent<WasdMovement>();
 
             while (game.RunState == GameRunState.Running)
             {

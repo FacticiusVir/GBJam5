@@ -1,7 +1,6 @@
-﻿using GBJam5.Components;
-using System;
+﻿using System;
 using System.Collections.Generic;
-using System.Linq;
+using System.Diagnostics;
 
 namespace GBJam5.Services
 {
@@ -12,6 +11,13 @@ namespace GBJam5.Services
         private List<IUpdatable> componentsToDeregister = new List<IUpdatable>();
 
         private List<UpdateStage> registeredStages = new List<UpdateStage>();
+
+        private long lastTimestamp;
+
+        public override void Start()
+        {
+            this.lastTimestamp = Stopwatch.GetTimestamp();
+        }
 
         public void Register(IUpdatable updatableComponent, UpdateStage stage)
         {
@@ -49,6 +55,10 @@ namespace GBJam5.Services
             // registeredStages is used to hold a sorted duplicate of
             // registeredComponents.Keys for the same reason.
 
+            long timestamp = Stopwatch.GetTimestamp();
+            this.DeltaT = (float)((timestamp - this.lastTimestamp) / (double)Stopwatch.Frequency);
+            this.lastTimestamp = timestamp;
+
             for (int stageIndex = 0; stageIndex < this.registeredStages.Count; stageIndex++)
             {
                 UpdateStage stage = this.registeredStages[stageIndex];
@@ -69,6 +79,12 @@ namespace GBJam5.Services
                 }
             }
         }
+
+        public float DeltaT
+        {
+            get;
+            private set;
+        }
     }
 
     public interface IUpdateLoopService
@@ -78,7 +94,7 @@ namespace GBJam5.Services
 
         void Deregister(IUpdatable updatableComponent);
 
-
+        float DeltaT { get; }
     }
 
     public enum UpdateStage

@@ -51,6 +51,8 @@
     <Compile Include="Audio\IAudio.cs" />
     <Compile Include="Audio\ISoundEffect.cs" />
     <Compile Include="Components\PixelScaleManager.cs" />
+    <Compile Include="Components\Transform2.cs" />
+    <Compile Include="Components\WasdMovement.cs" />
     <Compile Include="IUpdatable.cs" />
     <Compile Include="Components\SpriteRenderer.cs" />
     <Compile Include="DictionaryServiceProvider.cs" />
